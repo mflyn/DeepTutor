@@ -106,7 +106,7 @@ def _build_cors_settings() -> dict[str, object]:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _application_lifespan(app: FastAPI):
     """
     Application lifecycle management
     Gracefully handle startup and shutdown events, avoid CancelledError
@@ -359,6 +359,18 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to stop EventBus: {e}")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.ready = False
+    try:
+        app.state.ai1_runtime.start()
+        async with _application_lifespan(app):
+            yield
+    finally:
+        app.state.ready = False
+        app.state.ai1_runtime.stop()
+
+
 from deeptutor.services.workspace.activity import WorkspaceActivityMiddleware
 
 app = FastAPI(
@@ -371,6 +383,10 @@ app = FastAPI(
     # See: https://github.com/HKUDS/DeepTutor/issues/112
     redirect_slashes=False,
 )
+
+from deeptutor.services.ai1_runtime import mount_operation_runtime
+
+mount_operation_runtime(app)
 
 from deeptutor.core.errors import AccessError
 from deeptutor.modules.catalog import ModuleUnavailable
