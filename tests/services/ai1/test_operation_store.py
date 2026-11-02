@@ -1,5 +1,6 @@
 """Persistent single-send ownership, using only synthetic text and temporary storage."""
 
+from concurrent.futures import ThreadPoolExecutor
 import copy
 import importlib
 from pathlib import Path
@@ -7,7 +8,6 @@ import sqlite3
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -25,11 +25,18 @@ def payload():
         "requestHash": "a" * 64,
         "modelProfileVersion": "synthetic-model-v1",
         "pricingProfileVersion": "synthetic-price-v1",
-        "messages": [{"role": "system", "content": "Synthetic"},
-                     {"role": "user", "content": "206 * 30"}],
-        "requestOptions": {"model": "synthetic", "maxInputTokens": 8192,
-                           "maxOutputTokens": 4096, "thinking": "disabled",
-                           "tools": [], "attemptLimit": 1},
+        "messages": [
+            {"role": "system", "content": "Synthetic"},
+            {"role": "user", "content": "206 * 30"},
+        ],
+        "requestOptions": {
+            "model": "synthetic",
+            "maxInputTokens": 8192,
+            "maxOutputTokens": 4096,
+            "thinking": "disabled",
+            "tools": [],
+            "attemptLimit": 1,
+        },
         "reservedCeilingMicros": 184320,
         "sendNotAfter": "2030-01-01T00:00:00.000Z",
     }
@@ -59,8 +66,10 @@ def test_concurrent_claim_has_one_durable_winner(tmp_path, payload):
     path = tmp_path / "operations.sqlite"
     store = cls(path, initialize=True)
     store.accept(ID, payload)
+
     def claim(_):
         return cls(path).claim(ID, lambda snapshot: None)
+
     with ThreadPoolExecutor(max_workers=8) as pool:
         winners = [value for value in pool.map(claim, range(16)) if value]
     assert len(winners) == 1
@@ -74,14 +83,19 @@ def test_rejected_claim_is_atomic_and_never_sent(tmp_path, payload):
     store = cls(tmp_path / "operations.sqlite", initialize=True)
     store.accept(ID, payload)
     observed = []
+
     def expired(snapshot):
         observed.append(snapshot)
         return "PREVIEW_STALE"
+
     assert store.claim(ID, expired) is None
     assert observed == [payload]
     op = store.get(ID)
     assert (op["status"], op["error"], op["sendClaimed"]) == (
-        "failed_not_sent", "PREVIEW_STALE", False)
+        "failed_not_sent",
+        "PREVIEW_STALE",
+        False,
+    )
     assert store.claim(ID, lambda snapshot: None) is None
 
 
@@ -89,8 +103,10 @@ def test_policy_exception_rolls_back_without_claim(tmp_path, payload):
     cls = store_type()
     store = cls(tmp_path / "operations.sqlite", initialize=True)
     before, _ = store.accept(ID, payload)
+
     def broken(snapshot):
         raise RuntimeError("synthetic configuration unavailable")
+
     with pytest.raises(RuntimeError):
         store.claim(ID, broken)
     assert store.get(ID) == before
@@ -155,9 +171,13 @@ s = OperationStore(sys.argv[1])
 assert s.claim(sys.argv[2], lambda snapshot: None)
 os._exit(23)
 """
-    result = subprocess.run([sys.executable, "-c", script, str(store.path), ID],
-                            cwd=Path(__file__).resolve().parents[3],
-                            capture_output=True, text=True, timeout=10)
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(store.path), ID],
+        cwd=Path(__file__).resolve().parents[3],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     assert result.returncode == 23, result.stderr
     reopened = cls(store.path)
     before = reopened.get(ID)
@@ -173,19 +193,27 @@ def test_claim_checks_time_after_waiting_for_transaction(tmp_path, payload):
     clock = [0]
     checked = threading.Event()
     reached_begin = threading.Event()
+
     class ObservedStore(cls):
         def _connection(self, **kwargs):
             from contextlib import contextmanager
+
             @contextmanager
             def connect():
                 with super(ObservedStore, self)._connection(**kwargs) as db:
-                    db.set_trace_callback(lambda sql: reached_begin.set() if sql == "BEGIN IMMEDIATE" else None)
+                    db.set_trace_callback(
+                        lambda sql: reached_begin.set() if sql == "BEGIN IMMEDIATE" else None
+                    )
                     yield db
+
             return connect()
+
     delayed = ObservedStore(store.path)
+
     def policy(snapshot):
         checked.set()
         return "PREVIEW_STALE" if clock[0] >= 1 else None
+
     with sqlite3.connect(store.path) as lock:
         lock.execute("BEGIN IMMEDIATE")
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -219,11 +247,17 @@ def test_terminal_and_claim_race_preserves_first_audit(tmp_path, payload):
     store.accept(ID, payload)
     owner = store.claim(ID, lambda snapshot: None)
     gate = threading.Barrier(2)
+
     def finish(status):
         other = cls(store.path)
         gate.wait(timeout=3)
-        return other.finish(ID, owner, status,
-                            result={"text": "6180", "contentHash": "b" * 64} if status == "succeeded" else None)
+        return other.finish(
+            ID,
+            owner,
+            status,
+            result={"text": "6180", "contentHash": "b" * 64} if status == "succeeded" else None,
+        )
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(finish, ["succeeded", "failed_sent"]))
     assert sum(results) == 1
@@ -247,15 +281,18 @@ def test_database_constraints_reject_false_unsent_claim(tmp_path, payload):
 
 def test_lost_claim_commit_acknowledgement_never_reissues_owner(tmp_path, payload):
     from contextlib import contextmanager
+
     cls = store_type()
     store = cls(tmp_path / "operations.sqlite", initialize=True)
     store.accept(ID, payload)
+
     class LostAcknowledgement(cls):
         @contextmanager
         def _write(self):
             with super()._write() as db:
                 yield db
             raise OSError("synthetic commit acknowledgement lost")
+
     with pytest.raises(OSError, match="acknowledgement lost"):
         LostAcknowledgement(store.path).claim(ID, lambda snapshot: None)
     before = store.get(ID)
@@ -285,10 +322,12 @@ def test_reject_and_claim_race_only_one_wins(tmp_path, payload):
     store = cls(tmp_path / "operations.sqlite", initialize=True)
     store.accept(ID, payload)
     gate = threading.Barrier(2)
+
     def act(reject):
         other = cls(store.path)
         gate.wait(timeout=3)
         return other.reject(ID, "PREVIEW_STALE") if reject else other.claim(ID, lambda _: None)
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         rejected, owner = list(pool.map(act, [True, False]))
     assert int(rejected) + int(owner is not None) == 1

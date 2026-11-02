@@ -4,17 +4,25 @@ No default Provider or runtime settings are loaded. Storage continuity is an
 external admission prerequisite, never inferred from rows in this database.
 """
 
-import copy
 import asyncio
+import copy
 import re
 import time
 
-from deeptutor.services.ai1_contract import ContractError, check_policy, parse_request, validate_result
+from deeptutor.services.ai1_contract import (
+    ContractError,
+    check_policy,
+    parse_request,
+    validate_result,
+)
 
 
 class OperationService:
     def __init__(self, *, store, provider, profile, mode="off", continuous=False, clock=None):
-        if mode not in {"off", "enabled", "query-only", "store-isolated"} or type(continuous) is not bool:
+        if (
+            mode not in {"off", "enabled", "query-only", "store-isolated"}
+            or type(continuous) is not bool
+        ):
             raise ContractError("AI_PROFILE_UNAVAILABLE", 503)
         self.store = store
         self.provider = provider
@@ -32,7 +40,8 @@ class OperationService:
     @staticmethod
     def _id(operation_id):
         if not isinstance(operation_id, str) or not re.fullmatch(
-                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", operation_id):
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", operation_id
+        ):
             raise ContractError()
 
     def _prepare(self, snapshot):
@@ -59,7 +68,11 @@ class OperationService:
         try:
             self._prepare(snapshot)
         except ContractError as error:
-            failure = error.code if error.code in {"PREVIEW_STALE", "VALIDATION_ERROR", "PROFILE_UNAVAILABLE"} else "PROFILE_UNAVAILABLE"
+            failure = (
+                error.code
+                if error.code in {"PREVIEW_STALE", "VALIDATION_ERROR", "PROFILE_UNAVAILABLE"}
+                else "PROFILE_UNAVAILABLE"
+            )
         operation, created = self.store.accept(operation_id, snapshot)
         if failure:
             self.store.reject(operation_id, failure)
@@ -84,7 +97,11 @@ class OperationService:
             try:
                 prepared = self._prepare(snapshot)
             except ContractError as error:
-                return error.code if error.code in {"PREVIEW_STALE", "VALIDATION_ERROR", "PROFILE_UNAVAILABLE"} else "PROFILE_UNAVAILABLE"
+                return (
+                    error.code
+                    if error.code in {"PREVIEW_STALE", "VALIDATION_ERROR", "PROFILE_UNAVAILABLE"}
+                    else "PROFILE_UNAVAILABLE"
+                )
             return None
 
         # A lost commit acknowledgement raises before transport; replay cannot re-claim.

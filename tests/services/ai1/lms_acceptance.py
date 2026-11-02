@@ -21,16 +21,20 @@ import pytest
 from deeptutor.services.ai1_contract import request_hash
 from deeptutor.services.ai1_store import OperationStore
 
-
 REPO = Path(__file__).resolve().parents[3]
 TOKEN = "synthetic-service-credential-00000001"
 ID = "11111111-1111-4111-8111-111111111111"
 NOW = 1893456000000
 PROFILE = {
-    "model": "synthetic-model", "modelProfileVersion": "synthetic-v1",
-    "pricingProfileVersion": "synthetic-price-v1", "checkedAt": "2029-12-31T00:00:00.000Z",
-    "expiresAt": "2030-01-01T01:00:00.000Z", "callWindowMs": 5000, "clockMarginMs": 1000,
-    "inputPriceMicrosPerMillion": 1000000, "outputPriceMicrosPerMillion": 2000000,
+    "model": "synthetic-model",
+    "modelProfileVersion": "synthetic-v1",
+    "pricingProfileVersion": "synthetic-price-v1",
+    "checkedAt": "2029-12-31T00:00:00.000Z",
+    "expiresAt": "2030-01-01T01:00:00.000Z",
+    "callWindowMs": 5000,
+    "clockMarginMs": 1000,
+    "inputPriceMicrosPerMillion": 1000000,
+    "outputPriceMicrosPerMillion": 2000000,
 }
 PAYLOAD = json.loads(Path(__file__).with_name("lms_wire_golden.json").read_text())
 NODE_SOURCE = r"""
@@ -55,18 +59,27 @@ def private_json(path, value):
 def local(tmp_path):
     for name in ("AI1_LMS_ROOT", "AI1_NODE", "AI1_NODE_PATH"):
         assert os.environ.get(name), "Explicit cross-checkout prerequisite missing: " + name
-    assert (Path(os.environ["AI1_LMS_ROOT"]) / "backend/services/homework-service/services/ai1Operation.js").is_file()
+    assert (
+        Path(os.environ["AI1_LMS_ROOT"])
+        / "backend/services/homework-service/services/ai1Operation.js"
+    ).is_file()
     tmp_path.chmod(0o700)
     home = tmp_path / "home"
     system = home / "data/system"
     system.mkdir(parents=True)
-    selected = {json.loads(p.read_text())["id"]: False for p in (REPO / "deeptutor/modules/manifests").glob("*.json")}
+    selected = {
+        json.loads(p.read_text())["id"]: False
+        for p in (REPO / "deeptutor/modules/manifests").glob("*.json")
+    }
     selected.update({"core": True, "server": True})
     private_json(system / "modules.json", {"schema_version": 1, "enabled": selected})
     settings = home / "data/user/settings"
     settings.mkdir(parents=True)
     private_json(settings / "auth.json", {"version": 1, "enabled": True})
-    for name, value in (("service-token", TOKEN), ("provider-token", "synthetic-provider-credential-00001")):
+    for name, value in (
+        ("service-token", TOKEN),
+        ("provider-token", "synthetic-provider-credential-00001"),
+    ):
         (tmp_path / name).write_text(value)
         (tmp_path / name).chmod(0o600)
     store = OperationStore(tmp_path / "operations.sqlite", initialize=True)
@@ -79,23 +92,44 @@ def calls(root):
 
 
 def client(origin, method="put", *, payload=PAYLOAD, token=TOKEN, operation_id=ID):
-    preview = {key: copy.deepcopy(value) for key, value in payload.items()
-               if key not in {"schemaVersion", "requestHash"}}
+    preview = {
+        key: copy.deepcopy(value)
+        for key, value in payload.items()
+        if key not in {"schemaVersion", "requestHash"}
+    }
     preview["pricing"] = copy.deepcopy(PROFILE)
-    data = {"origin": origin, "method": method, "token": token,
-            "job": {"remoteOperationId": operation_id, "preview": preview}}
-    env = {"PATH": os.defpath, "HOME": "/nonexistent", "NODE_PATH": os.environ["AI1_NODE_PATH"],
-           "AI1_LMS_ROOT": os.environ["AI1_LMS_ROOT"]}
-    result = subprocess.run([os.environ["AI1_NODE"], "-e", NODE_SOURCE], input=json.dumps(data),
-                            env=env, text=True, capture_output=True, timeout=10)
+    data = {
+        "origin": origin,
+        "method": method,
+        "token": token,
+        "job": {"remoteOperationId": operation_id, "preview": preview},
+    }
+    env = {
+        "PATH": os.defpath,
+        "HOME": "/nonexistent",
+        "NODE_PATH": os.environ["AI1_NODE_PATH"],
+        "AI1_LMS_ROOT": os.environ["AI1_LMS_ROOT"],
+    }
+    result = subprocess.run(
+        [os.environ["AI1_NODE"], "-e", NODE_SOURCE],
+        input=json.dumps(data),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
 
 
 @contextmanager
 def serve(root, *, mode="enabled", fault="none", profile=PROFILE, now=NOW, store_continuous=True):
-    config = {"mode": mode, "storeContinuous": store_continuous, "storePath": str(root / "operations.sqlite"),
-              "serviceTokenFile": str(root / "service-token")}
+    config = {
+        "mode": mode,
+        "storeContinuous": store_continuous,
+        "storePath": str(root / "operations.sqlite"),
+        "serviceTokenFile": str(root / "service-token"),
+    }
     if store_continuous is None:
         config.pop("storeContinuous")
     if mode == "enabled":
@@ -105,20 +139,40 @@ def serve(root, *, mode="enabled", fault="none", profile=PROFILE, now=NOW, store
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     origin = "http://127.0.0.1:" + str(listener.getsockname()[1])
-    env = {"PATH": os.defpath, "HOME": str(root / "home"), "DEEPTUTOR_HOME": str(root / "home"),
-           "PYTHONPATH": str(REPO), "PYTHONDONTWRITEBYTECODE": "1",
-           "DEEPTUTOR_AI1_CONFIG_FILE": str(root / "runtime.json")}
+    env = {
+        "PATH": os.defpath,
+        "HOME": str(root / "home"),
+        "DEEPTUTOR_HOME": str(root / "home"),
+        "PYTHONPATH": str(REPO),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "DEEPTUTOR_AI1_CONFIG_FILE": str(root / "runtime.json"),
+    }
     process = None
     with (root / ("server-" + str(time.time_ns()) + ".log")).open("w") as log:
         try:
-            process = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "--serve",
-                                        str(listener.fileno()), str(root), fault], cwd=REPO, env=env,
-                                       stdout=log, stderr=subprocess.STDOUT, pass_fds=(listener.fileno(),))
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-B",
+                    str(Path(__file__).resolve()),
+                    "--serve",
+                    str(listener.fileno()),
+                    str(root),
+                    fault,
+                ],
+                cwd=REPO,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                pass_fds=(listener.fileno(),),
+            )
             listener.close()
             with httpx.Client(trust_env=False, timeout=0.3) as probe:
                 deadline = time.monotonic() + 15
                 while True:
-                    assert process.poll() is None, "Formal main exited before readiness; see local server log"
+                    assert process.poll() is None, (
+                        "Formal main exited before readiness; see local server log"
+                    )
                     try:
                         if probe.get(origin + "/health/ready").status_code == 200:
                             break
@@ -149,7 +203,10 @@ def test_real_lms_client_success_replay_and_readonly_restart(local):
         assert result["operation"]["usage"] == {"inputTokens": 100, "outputTokens": 50}
         assert client(origin) == result and client(origin, "get") == result
         assert len(calls(root)) == 1
-        assert client(origin, "get", token="wrong-synthetic-service-token-000001")["error"] == "AI_REMOTE_UNAVAILABLE"
+        assert (
+            client(origin, "get", token="wrong-synthetic-service-token-000001")["error"]
+            == "AI_REMOTE_UNAVAILABLE"
+        )
         changed = copy.deepcopy(PAYLOAD)
         changed["messages"][1]["content"] += " changed"
         changed["requestHash"] = request_hash(changed)
@@ -219,20 +276,24 @@ def server_main():
     # A test-only process entry, never an application runtime option.
     fd, root, fault = int(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
     original_connect = socket.socket.connect
+
     def no_external(self, address):
         if self.family in (socket.AF_INET, socket.AF_INET6):
             raise AssertionError("Outbound network forbidden in synthetic server")
         return original_connect(self, address)
+
     socket.socket.connect = no_external
+    import uvicorn
+
     from deeptutor.api import main
     from deeptutor.services.ai1_provider import RestrictedCompletionProvider
-    import uvicorn
 
     test_settings = json.loads((root / "test-clock.json").read_text())
     profile, now = test_settings["profile"], test_settings["now"]
 
     class Counter:
         model_profile_version = profile["modelProfileVersion"]
+
         def upper_bound(self, _wire):
             return 8192
 
@@ -241,10 +302,23 @@ def server_main():
             output.write(json.dumps({"method": request.method, "path": request.url.path}) + "\n")
             output.flush()
             os.fsync(output.fileno())
-        return httpx.Response(200, json={"id": "synthetic", "object": "chat.completion", "created": 1,
-            "model": profile["model"], "choices": [{"index": 0, "finish_reason": "stop",
-                "message": {"role": "assistant", "content": "6180"}}],
-            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}})
+        return httpx.Response(
+            200,
+            json={
+                "id": "synthetic",
+                "object": "chat.completion",
+                "created": 1,
+                "model": profile["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "6180"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            },
+        )
 
     class Provider(RestrictedCompletionProvider):
         async def send(self, prepared):
@@ -257,39 +331,58 @@ def server_main():
 
     runtime = main.app.state.ai1_runtime
     runtime._clock = lambda: now
-    runtime._provider = Provider(profile=profile, counter=Counter(), clock=runtime._clock,
-        key_loader=lambda: "synthetic-provider-credential-00001", transport_factory=lambda: httpx.MockTransport(response))
+    runtime._provider = Provider(
+        profile=profile,
+        counter=Counter(),
+        clock=runtime._clock,
+        key_loader=lambda: "synthetic-provider-credential-00001",
+        transport_factory=lambda: httpx.MockTransport(response),
+    )
     if fault == "after-accept":
         original_accept = OperationStore.accept
+
         def accept(self, *args, **kwargs):
             result = original_accept(self, *args, **kwargs)
             if result[1]:
                 os._exit(73)
             return result
+
         OperationStore.accept = accept
     app = main.app
     if fault == "drop-response":
+
         async def dropped(scope, receive, send):
             async def intercepted(message):
-                if (scope.get("method") == "PUT" and scope.get("path", "").startswith("/internal/deeptutor/operations/")
-                        and message["type"] == "http.response.body"):
+                if (
+                    scope.get("method") == "PUT"
+                    and scope.get("path", "").startswith("/internal/deeptutor/operations/")
+                    and message["type"] == "http.response.body"
+                ):
                     raise RuntimeError("Synthetic response loss after durable terminal")
                 await send(message)
+
             await app(scope, receive, intercepted)
+
         serving = dropped
     else:
         serving = app
     inner = serving
+
     async def recorded(scope, receive, send):
         prefix = "/internal/deeptutor/operations/"
         if scope.get("type") == "http" and scope.get("path", "").startswith(prefix):
             with (root / "requests.jsonl").open("a") as output:
-                output.write(json.dumps({"method": scope["method"], "id": scope["path"][len(prefix):]}) + "\n")
+                output.write(
+                    json.dumps({"method": scope["method"], "id": scope["path"][len(prefix) :]})
+                    + "\n"
+                )
                 output.flush()
                 os.fsync(output.fileno())
         await inner(scope, receive, send)
-    uvicorn.Server(uvicorn.Config(recorded, lifespan="on", access_log=False, log_level="error")).run(
-        sockets=[socket.socket(fileno=fd)])
+
+    uvicorn.Server(
+        uvicorn.Config(recorded, lifespan="on", access_log=False, log_level="error")
+    ).run(sockets=[socket.socket(fileno=fd)])
 
 
 if __name__ == "__main__":

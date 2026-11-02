@@ -10,19 +10,23 @@ import sqlite3
 import subprocess
 import sys
 
+from fastapi import FastAPI
 import httpx
 import pytest
-from fastapi import FastAPI
 
 from deeptutor.services.ai1_contract import ContractError
 from deeptutor.services.ai1_store import OperationStore
 
-
 PROFILE = {
-    "model": "synthetic-model", "modelProfileVersion": "synthetic-v1",
-    "pricingProfileVersion": "synthetic-price-v1", "checkedAt": "2029-12-31T00:00:00.000Z",
-    "expiresAt": "2030-01-01T01:00:00.000Z", "callWindowMs": 5000, "clockMarginMs": 1000,
-    "inputPriceMicrosPerMillion": 1000000, "outputPriceMicrosPerMillion": 2000000,
+    "model": "synthetic-model",
+    "modelProfileVersion": "synthetic-v1",
+    "pricingProfileVersion": "synthetic-price-v1",
+    "checkedAt": "2029-12-31T00:00:00.000Z",
+    "expiresAt": "2030-01-01T01:00:00.000Z",
+    "callWindowMs": 5000,
+    "clockMarginMs": 1000,
+    "inputPriceMicrosPerMillion": 1000000,
+    "outputPriceMicrosPerMillion": 2000000,
 }
 ID = "11111111-1111-4111-8111-111111111111"
 TOKEN = "synthetic-service-credential-00000001"
@@ -38,39 +42,57 @@ def runtime_module():
 def setup(tmp_path):
     tmp_path.chmod(0o700)
     store = OperationStore(tmp_path / "operations.sqlite", initialize=True)
-    for name, value in [("service-token", TOKEN), ("provider-token", "synthetic-provider-credential-00001")]:
+    for name, value in [
+        ("service-token", TOKEN),
+        ("provider-token", "synthetic-provider-credential-00001"),
+    ]:
         (tmp_path / name).write_text(value)
         (tmp_path / name).chmod(0o600)
-    config = {"mode": "enabled", "storePath": str(store.path), "storeContinuous": True,
-              "serviceTokenFile": str(tmp_path / "service-token"), "providerKeyFile": str(tmp_path / "provider-token"),
-              "profile": copy.deepcopy(PROFILE)}
+    config = {
+        "mode": "enabled",
+        "storePath": str(store.path),
+        "storeContinuous": True,
+        "serviceTokenFile": str(tmp_path / "service-token"),
+        "providerKeyFile": str(tmp_path / "provider-token"),
+        "profile": copy.deepcopy(PROFILE),
+    }
     config_path = tmp_path / "ai1.json"
+
     def save():
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
+
     save()
+
     class Provider:
         calls = 0
+
         def prepare(self, snapshot):
             return copy.deepcopy(snapshot)
+
         async def send(self, snapshot):
             self.calls += 1
             return "6180", {"inputTokens": 100, "outputTokens": 50}
+
     provider = Provider()
     return config_path, config, save, store, provider
 
 
 def mount(path=None, provider=None):
     app = FastAPI()
-    runtime = runtime_module().mount_operation_runtime(app, config_path=path, provider=provider,
-                                                      clock=lambda: 1893456000000)
+    runtime = runtime_module().mount_operation_runtime(
+        app, config_path=path, provider=provider, clock=lambda: 1893456000000
+    )
     return app, runtime
 
 
 def call(app, method="GET", suffix="operations/" + ID, **kwargs):
     async def run():
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://synthetic") as client:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://synthetic"
+        ) as client:
             return await client.request(method, "/internal/deeptutor/" + suffix, **kwargs)
+
     return asyncio.run(run())
 
 
@@ -94,7 +116,10 @@ def test_mounted_enabled_path_auth_replay_and_narrow_credential(setup):
     assert call(app, headers={"authorization": "Bearer " + TOKEN}).status_code == 401
     headers = {"x-ai1-service-token": TOKEN}
     response = call(app, "PUT", headers=headers, json=PAYLOAD)
-    assert response.status_code == 201 and response.json()["data"]["operation"]["status"] == "succeeded"
+    assert (
+        response.status_code == 201
+        and response.json()["data"]["operation"]["status"] == "succeeded"
+    )
     assert call(app, "PUT", headers=headers, json=PAYLOAD).status_code == 200
     assert provider.calls == 1
     for suffix in ["docs", "openapi.json", "settings", "operations/" + ID + "/"]:
@@ -136,7 +161,9 @@ def test_isolated_does_not_open_missing_store_or_load_provider(setup):
     assert not Path(config["storePath"]).exists()
 
 
-@pytest.mark.parametrize("change", ["mode", "continuity", "missing-store", "missing-key", "same-key", "profile", "extra"])
+@pytest.mark.parametrize(
+    "change", ["mode", "continuity", "missing-store", "missing-key", "same-key", "profile", "extra"]
+)
 def test_bad_enabled_configuration_stops_without_write_or_send(setup, change):
     path, config, save, store, provider = setup
     if change == "mode":
@@ -162,7 +189,18 @@ def test_bad_enabled_configuration_stops_without_write_or_send(setup, change):
     assert store.path.read_bytes() == before and provider.calls == 0
 
 
-@pytest.mark.parametrize("unsafe", ["config-mode", "token-mode", "parent-mode", "symlink", "hardlink", "duplicate-json", "oversize"])
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "config-mode",
+        "token-mode",
+        "parent-mode",
+        "symlink",
+        "hardlink",
+        "duplicate-json",
+        "oversize",
+    ],
+)
 def test_private_configuration_and_secret_files_reject_unsafe_inputs(setup, unsafe):
     path, config, _, store, provider = setup
     if unsafe == "config-mode":
@@ -207,7 +245,9 @@ def test_startup_rejects_store_without_unique_id_index(setup):
     app, runtime = mount(path, provider)
     with pytest.raises(ContractError, match="AI_PROFILE_UNAVAILABLE"):
         runtime.start()
-    assert call(app).status_code == 503 and store.path.read_bytes() == before and provider.calls == 0
+    assert (
+        call(app).status_code == 503 and store.path.read_bytes() == before and provider.calls == 0
+    )
 
 
 @pytest.mark.parametrize("target", ["config", "serviceTokenFile", "providerKeyFile"])
@@ -226,7 +266,9 @@ except ContractError as error:
 else:
     raise AssertionError('FIFO must be rejected')
 """.replace("CONFIG_PATH", repr(str(path)))
-    result = subprocess.run([sys.executable, "-B", "-c", script], capture_output=True, text=True, timeout=2)
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", script], capture_output=True, text=True, timeout=2
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -236,7 +278,10 @@ def formal_probe(tmp_path, config_path, source):
     modules = home / "data" / "system"
     modules.mkdir(parents=True, exist_ok=True)
     repo = Path(__file__).resolve().parents[3]
-    selected = {json.loads(p.read_text())["id"]: False for p in (repo / "deeptutor/modules/manifests").glob("*.json")}
+    selected = {
+        json.loads(p.read_text())["id"]: False
+        for p in (repo / "deeptutor/modules/manifests").glob("*.json")
+    }
     selected.update({"core": True, "server": True})
     (modules / "modules.json").write_text(json.dumps({"schema_version": 1, "enabled": selected}))
     settings = home / "data" / "user" / "settings"
@@ -244,12 +289,22 @@ def formal_probe(tmp_path, config_path, source):
     auth = settings / "auth.json"
     auth.write_text(json.dumps({"version": 1, "enabled": True}))
     auth.chmod(0o600)
-    env = {"PATH": os.defpath, "HOME": str(home), "DEEPTUTOR_HOME": str(home),
-           "PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {
+        "PATH": os.defpath,
+        "HOME": str(home),
+        "DEEPTUTOR_HOME": str(home),
+        "PYTHONPATH": str(repo),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
     if config_path is not None:
         env["DEEPTUTOR_AI1_CONFIG_FILE"] = str(config_path)
     # No credentials/settings inherit from the developer's process or real home.
-    result = subprocess.run([sys.executable, "-B", "-c", """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            """
 import socket
 original_connect = socket.socket.connect
 def deny_external(self, address):
@@ -261,28 +316,43 @@ import asyncio
 import httpx
 from deeptutor.api import main
 from fastapi.testclient import TestClient
-""" + source], cwd=repo, env=env, capture_output=True, text=True, timeout=30)
+"""
+            + source,
+        ],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "FORMAL_PROBE_PASS" in result.stdout
     return result.stdout
 
 
 def test_actual_formal_main_default_off_lifecycle(tmp_path):
-    formal_probe(tmp_path, None, """
+    formal_probe(
+        tmp_path,
+        None,
+        """
 with TestClient(main.app) as client:
     assert client.get('/health/live').status_code == 200
     assert client.get('/internal/deeptutor/operations/11111111-1111-4111-8111-111111111111').status_code == 503
     assert main.app.state.ai1_runtime.service is None
 assert not main.app.state.ai1_runtime._started
 print('FORMAL_PROBE_PASS')
-""")
+""",
+    )
 
 
 def test_actual_main_startup_failure_closes_prepared_runtime(setup, tmp_path):
     path, config, save, _, _ = setup
     config["mode"] = "query-only"
     save()
-    formal_probe(tmp_path, path, """
+    formal_probe(
+        tmp_path,
+        path,
+        """
 def fail_start():
     raise RuntimeError('synthetic unrelated startup failure')
 main.validate_tool_consistency = fail_start
@@ -295,12 +365,14 @@ assert main.app.state.ai1_runtime.service is None
 assert not main.app.state.ai1_runtime._started
 assert main.app.state.ready is False
 print('FORMAL_PROBE_PASS')
-""")
+""",
+    )
 
 
 def test_actual_main_enabled_sdk_narrow_auth_and_query_only_restart(setup, tmp_path):
     path, _, _, store, _ = setup
-    source = """
+    source = (
+        """
 import json
 from pathlib import Path
 from deeptutor.services.ai1_provider import RestrictedCompletionProvider
@@ -347,15 +419,26 @@ config.pop('profile')
 config.pop('providerKeyFile')
 config_path.write_text(json.dumps(config))
 print('FORMAL_PROBE_PASS')
-""".replace("PROFILE_VALUE", repr(PROFILE)).replace("PAYLOAD_VALUE", repr(PAYLOAD)).replace(
-        "TOKEN_VALUE", repr(TOKEN)).replace("CONFIG_PATH_VALUE", repr(str(path)))
+""".replace("PROFILE_VALUE", repr(PROFILE))
+        .replace("PAYLOAD_VALUE", repr(PAYLOAD))
+        .replace("TOKEN_VALUE", repr(TOKEN))
+        .replace("CONFIG_PATH_VALUE", repr(str(path)))
+    )
     output = formal_probe(tmp_path, path, source)
-    original = json.loads(next(line.removeprefix("FORMAL_FIRST_OPERATION=") for line in output.splitlines()
-                               if line.startswith("FORMAL_FIRST_OPERATION=")))
+    original = json.loads(
+        next(
+            line.removeprefix("FORMAL_FIRST_OPERATION=")
+            for line in output.splitlines()
+            if line.startswith("FORMAL_FIRST_OPERATION=")
+        )
+    )
     assert store.get(ID) == original
     assert original["status"] == "succeeded"
     before = store.path.read_bytes()
-    formal_probe(tmp_path, path, """
+    formal_probe(
+        tmp_path,
+        path,
+        """
 headers = {'x-ai1-service-token': TOKEN_VALUE}
 url = '/internal/deeptutor/operations/11111111-1111-4111-8111-111111111111'
 with TestClient(main.app) as client:
@@ -363,5 +446,8 @@ with TestClient(main.app) as client:
     assert client.put(url, headers=headers, json=PAYLOAD_VALUE).status_code == 503
 assert main.app.state.ai1_runtime.service is None
 print('FORMAL_PROBE_PASS')
-""".replace("TOKEN_VALUE", repr(TOKEN)).replace("ORIGINAL_VALUE", repr(original)).replace("PAYLOAD_VALUE", repr(PAYLOAD)))
+""".replace("TOKEN_VALUE", repr(TOKEN))
+        .replace("ORIGINAL_VALUE", repr(original))
+        .replace("PAYLOAD_VALUE", repr(PAYLOAD)),
+    )
     assert store.path.read_bytes() == before

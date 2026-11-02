@@ -9,14 +9,25 @@ import stat
 import time
 
 from deeptutor.services.ai1_contract import (
-    ContractError, _nonfinite, _object, check_policy, iso_ms, request_hash,
+    ContractError,
+    _nonfinite,
+    _object,
+    check_policy,
+    iso_ms,
+    request_hash,
 )
 from deeptutor.services.ai1_http import _error, create_operation_app
 from deeptutor.services.ai1_operation import OperationService
 from deeptutor.services.ai1_store import OperationStore
 
-
-CONFIG_KEYS = {"mode", "storePath", "storeContinuous", "serviceTokenFile", "providerKeyFile", "profile"}
+CONFIG_KEYS = {
+    "mode",
+    "storePath",
+    "storeContinuous",
+    "serviceTokenFile",
+    "providerKeyFile",
+    "profile",
+}
 
 
 def _private_bytes(value, maximum):
@@ -31,8 +42,13 @@ def _private_bytes(value, maximum):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(descriptor)
-        if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_nlink != 1
-                or info.st_uid != os.getuid() or info.st_size > maximum):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_mode & 0o077
+            or info.st_nlink != 1
+            or info.st_uid != os.getuid()
+            or info.st_size > maximum
+        ):
             raise ValueError()
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
             result = stream.read(maximum + 1)
@@ -55,15 +71,28 @@ def _profile_probe(profile, now):
     expires = iso_ms(profile["expiresAt"])
     deadline = expires - profile["callWindowMs"] - profile["clockMarginMs"]
     stamp = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=deadline)
-    body = {"schemaVersion": "ai1-provider-operation-v1", "modelProfileVersion": profile["modelProfileVersion"],
-            "pricingProfileVersion": profile["pricingProfileVersion"],
-            "messages": [{"role": "system", "content": "AI-1 readiness; do not send."},
-                         {"role": "user", "content": "Synthetic readiness."}],
-            "requestOptions": {"model": profile["model"], "maxInputTokens": 8192, "maxOutputTokens": 4096,
-                               "thinking": "disabled", "tools": [], "attemptLimit": 1},
-            "reservedCeilingMicros": ((8192 * profile["inputPriceMicrosPerMillion"] + 999999) // 1000000
-                                      + (4096 * profile["outputPriceMicrosPerMillion"] + 999999) // 1000000),
-            "sendNotAfter": stamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+    body = {
+        "schemaVersion": "ai1-provider-operation-v1",
+        "modelProfileVersion": profile["modelProfileVersion"],
+        "pricingProfileVersion": profile["pricingProfileVersion"],
+        "messages": [
+            {"role": "system", "content": "AI-1 readiness; do not send."},
+            {"role": "user", "content": "Synthetic readiness."},
+        ],
+        "requestOptions": {
+            "model": profile["model"],
+            "maxInputTokens": 8192,
+            "maxOutputTokens": 4096,
+            "thinking": "disabled",
+            "tools": [],
+            "attemptLimit": 1,
+        },
+        "reservedCeilingMicros": (
+            (8192 * profile["inputPriceMicrosPerMillion"] + 999999) // 1000000
+            + (4096 * profile["outputPriceMicrosPerMillion"] + 999999) // 1000000
+        ),
+        "sendNotAfter": stamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
     body["requestHash"] = request_hash(body)
     if check_policy(body, profile, now):
         raise ValueError()
@@ -90,11 +119,20 @@ class OperationRuntime:
         if self._started:
             return
         try:
-            config = ({"mode": "off"} if self._config_path is None else
-                      json.loads(_private_bytes(self._config_path, 8192).decode("utf-8", "strict"),
-                                 object_pairs_hook=_object, parse_constant=_nonfinite))
-            if (type(config) is not dict or not config.keys() <= CONFIG_KEYS
-                    or config.get("mode") not in {"off", "query-only", "enabled", "store-isolated"}):
+            config = (
+                {"mode": "off"}
+                if self._config_path is None
+                else json.loads(
+                    _private_bytes(self._config_path, 8192).decode("utf-8", "strict"),
+                    object_pairs_hook=_object,
+                    parse_constant=_nonfinite,
+                )
+            )
+            if (
+                type(config) is not dict
+                or not config.keys() <= CONFIG_KEYS
+                or config.get("mode") not in {"off", "query-only", "enabled", "store-isolated"}
+            ):
                 raise ValueError()
             mode = config["mode"]
             if mode == "off":
@@ -119,13 +157,20 @@ class OperationRuntime:
                     if provider is None:
                         from deeptutor.services.ai1_provider import RestrictedCompletionProvider
 
-                        provider = RestrictedCompletionProvider(profile=profile, key_loader=lambda: key,
-                                                                clock=self._clock)
+                        provider = RestrictedCompletionProvider(
+                            profile=profile, key_loader=lambda: key, clock=self._clock
+                        )
                     provider.prepare(probe)
                     if check_policy(probe, profile, self._clock()):
                         raise ValueError()
-                service = OperationService(store=store, provider=provider, profile=profile,
-                                           mode=mode, continuous=True, clock=self._clock)
+                service = OperationService(
+                    store=store,
+                    provider=provider,
+                    profile=profile,
+                    mode=mode,
+                    continuous=True,
+                    clock=self._clock,
+                )
             application = create_operation_app(service=service, token=token)
             self.service, self._app, self._started = service, application, True
         except Exception:
@@ -148,9 +193,13 @@ class OperationRuntime:
 def mount_operation_runtime(app, *, config_path=None, provider=None, clock=None):
     if getattr(app.state, "ai1_runtime", None) is not None:
         raise ContractError("AI_PROFILE_UNAVAILABLE", 503)
-    runtime = OperationRuntime(config_path=(config_path if config_path is not None else
-                                           os.environ.get("DEEPTUTOR_AI1_CONFIG_FILE")),
-                               provider=provider, clock=clock)
+    runtime = OperationRuntime(
+        config_path=(
+            config_path if config_path is not None else os.environ.get("DEEPTUTOR_AI1_CONFIG_FILE")
+        ),
+        provider=provider,
+        clock=clock,
+    )
     app.mount("/internal/deeptutor", runtime, name="ai1-internal")
     app.state.ai1_runtime = runtime
     return runtime

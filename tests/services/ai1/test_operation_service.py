@@ -12,13 +12,17 @@ import rfc8785
 from deeptutor.services.ai1_contract import ContractError, iso_ms, request_hash
 from deeptutor.services.ai1_store import OperationStore
 
-
 ID = "11111111-1111-4111-8111-111111111111"
 PROFILE = {
-    "model": "synthetic-model", "modelProfileVersion": "synthetic-v1",
-    "pricingProfileVersion": "synthetic-price-v1", "checkedAt": "2029-12-31T00:00:00.000Z",
-    "expiresAt": "2030-01-01T01:00:00.000Z", "callWindowMs": 5000, "clockMarginMs": 1000,
-    "inputPriceMicrosPerMillion": 1000000, "outputPriceMicrosPerMillion": 2000000,
+    "model": "synthetic-model",
+    "modelProfileVersion": "synthetic-v1",
+    "pricingProfileVersion": "synthetic-price-v1",
+    "checkedAt": "2029-12-31T00:00:00.000Z",
+    "expiresAt": "2030-01-01T01:00:00.000Z",
+    "callWindowMs": 5000,
+    "clockMarginMs": 1000,
+    "inputPriceMicrosPerMillion": 1000000,
+    "outputPriceMicrosPerMillion": 2000000,
 }
 
 
@@ -31,16 +35,28 @@ def service_type():
 def setup(tmp_path):
     cls = service_type()
     body = {
-        "schemaVersion": "ai1-provider-operation-v1", "modelProfileVersion": "synthetic-v1",
-        "pricingProfileVersion": "synthetic-price-v1", "messages": [
-            {"role": "system", "content": "Synthetic system"}, {"role": "user", "content": "206 * 30"}],
-        "requestOptions": {"model": "synthetic-model", "maxInputTokens": 8192, "maxOutputTokens": 4096,
-                           "thinking": "disabled", "tools": [], "attemptLimit": 1},
-        "reservedCeilingMicros": 16384, "sendNotAfter": "2030-01-01T00:59:54.000Z",
+        "schemaVersion": "ai1-provider-operation-v1",
+        "modelProfileVersion": "synthetic-v1",
+        "pricingProfileVersion": "synthetic-price-v1",
+        "messages": [
+            {"role": "system", "content": "Synthetic system"},
+            {"role": "user", "content": "206 * 30"},
+        ],
+        "requestOptions": {
+            "model": "synthetic-model",
+            "maxInputTokens": 8192,
+            "maxOutputTokens": 4096,
+            "thinking": "disabled",
+            "tools": [],
+            "attemptLimit": 1,
+        },
+        "reservedCeilingMicros": 16384,
+        "sendNotAfter": "2030-01-01T00:59:54.000Z",
     }
     body["requestHash"] = request_hash(body)
     store = OperationStore(tmp_path / "operations.sqlite", initialize=True)
     clock = [1893456000000]
+
     class Provider:
         def __init__(self):
             self.calls = []
@@ -48,20 +64,30 @@ def setup(tmp_path):
             self.result = ("6180", {"inputTokens": 100, "outputTokens": 50})
             self.error = None
             self.prepare_error = None
+
         def prepare(self, snapshot):
             self.prepares.append(copy.deepcopy(snapshot))
             if self.prepare_error:
                 raise self.prepare_error
             return rfc8785.dumps(snapshot)
+
         async def send(self, prepared):
             self.calls.append(prepared)
             if self.error:
                 raise self.error
             return self.result
+
     provider = Provider()
+
     def make(**options):
-        return cls(store=store, provider=provider, profile=PROFILE, clock=lambda: clock[0],
-                   **{"mode": "enabled", "continuous": True, **options})
+        return cls(
+            store=store,
+            provider=provider,
+            profile=PROFILE,
+            clock=lambda: clock[0],
+            **{"mode": "enabled", "continuous": True, **options},
+        )
+
     return make, store, body, provider, clock
 
 
@@ -100,7 +126,11 @@ def test_old_backup_or_unknown_continuity_is_always_isolated(setup, state):
     before = store.path.read_bytes()
     calls = len(provider.calls)
     for service in [make(mode="store-isolated"), make(continuous=False)]:
-        for action in [lambda: service.get(ID), lambda: put(service, body), lambda: asyncio.run(service.dispatch(ID))]:
+        for action in [
+            lambda: service.get(ID),
+            lambda: put(service, body),
+            lambda: asyncio.run(service.dispatch(ID)),
+        ]:
             with pytest.raises(ContractError, match="AI_STORE_ISOLATED"):
                 action()
     assert store.path.read_bytes() == before
@@ -161,8 +191,14 @@ def test_accepted_profile_change_rejects_before_claim_and_replays_exactly(setup,
         profile["pricingProfileVersion"] = "revoked-price"
     else:
         profile["inputPriceMicrosPerMillion"] *= 2
-    service = service_type()(store=store, provider=provider, profile=profile,
-                             mode="enabled", continuous=True, clock=lambda: clock[0])
+    service = service_type()(
+        store=store,
+        provider=provider,
+        profile=profile,
+        mode="enabled",
+        continuous=True,
+        clock=lambda: clock[0],
+    )
     asyncio.run(service.dispatch(ID))
     rejected = service.get(ID)
     assert rejected["status"] == "failed_not_sent" and rejected["sendClaimed"] is False
@@ -180,10 +216,12 @@ def test_expiry_after_claim_before_transport_is_unknown_no_call(setup):
     service = make()
     put(service, body)
     original = store.claim
+
     def claim_then_expire(*args):
         owner = original(*args)
         clock[0] = iso_ms(body["sendNotAfter"])
         return owner
+
     store.claim = claim_then_expire
     asyncio.run(service.dispatch(ID))
     op = service.get(ID)
@@ -196,10 +234,12 @@ def test_preparation_crosses_deadline_before_claim_is_not_sent(setup):
     service = make()
     put(service, body)
     original = provider.prepare
+
     def prepare_then_expire(snapshot):
         prepared = original(snapshot)
         clock[0] = iso_ms(body["sendNotAfter"])
         return prepared
+
     provider.prepare = prepare_then_expire
     asyncio.run(service.dispatch(ID))
     operation = service.get(ID)
@@ -222,9 +262,17 @@ def test_transport_error_unknown_no_retry_or_refund(setup):
     assert len(provider.calls) == 1
 
 
-@pytest.mark.parametrize("result", [("", None), ("\ufeff", None), ("\ufeff \t\n", None),
-                                     ("6180", {"inputTokens": 8193, "outputTokens": 0}),
-                                     ("x" * 12001, None), ("6180", {"inputTokens": True, "outputTokens": 0})])
+@pytest.mark.parametrize(
+    "result",
+    [
+        ("", None),
+        ("\ufeff", None),
+        ("\ufeff \t\n", None),
+        ("6180", {"inputTokens": 8193, "outputTokens": 0}),
+        ("x" * 12001, None),
+        ("6180", {"inputTokens": True, "outputTokens": 0}),
+    ],
+)
 def test_invalid_provider_result_is_unknown_not_false_success(setup, result):
     make, store, body, provider, clock = setup
     provider.result = result
@@ -250,14 +298,17 @@ def test_concurrent_dispatch_claims_once(setup):
     make, store, body, provider, clock = setup
     service = make()
     put(service, body)
+
     async def run():
         entered, release = asyncio.Event(), asyncio.Event()
         original = provider.send
+
         async def held_send(prepared):
             result = await original(prepared)
             entered.set()
             await release.wait()
             return result
+
         provider.send = held_send
         first = asyncio.create_task(service.dispatch(ID))
         try:
@@ -268,6 +319,7 @@ def test_concurrent_dispatch_claims_once(setup):
         finally:
             release.set()
             await asyncio.wait_for(first, 2)
+
     asyncio.run(run())
     assert len(provider.calls) == 1
 
@@ -276,12 +328,15 @@ def test_cancellation_during_send_marks_unknown_and_propagates(setup):
     make, store, body, provider, clock = setup
     service = make()
     put(service, body)
+
     async def run():
         entered = asyncio.Event()
+
         async def cancelled_send(prepared):
             provider.calls.append(prepared)
             entered.set()
             await asyncio.Event().wait()
+
         provider.send = cancelled_send
         task = asyncio.create_task(service.dispatch(ID))
         try:
@@ -291,10 +346,15 @@ def test_cancellation_during_send_marks_unknown_and_propagates(setup):
             with pytest.raises(asyncio.CancelledError):
                 await task
         await make().dispatch(ID)
+
     asyncio.run(run())
     operation = service.get(ID)
-    assert (operation["status"], operation["error"], operation["sendClaimed"], operation["usage"]) == (
-        "unknown", "RESULT_UNKNOWN", True, None)
+    assert (
+        operation["status"],
+        operation["error"],
+        operation["sendClaimed"],
+        operation["usage"],
+    ) == ("unknown", "RESULT_UNKNOWN", True, None)
     assert len(provider.calls) == 1
 
 

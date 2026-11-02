@@ -74,25 +74,41 @@ class OperationStore:
     def check_ready(self, *, writable=False):
         with self._connection(readonly=not writable) as db:
             columns = db.execute("PRAGMA table_info(operations)").fetchall()
-            if (set(row["name"] for row in columns) != {"id", "request_hash", "snapshot", "status", "owner",
-                                                       "result", "error", "usage", "updated_at"}
-                    or [(row["name"], row["pk"], row["notnull"]) for row in columns if row["pk"]] != [("id", 1, 1)]):
+            if set(row["name"] for row in columns) != {
+                "id",
+                "request_hash",
+                "snapshot",
+                "status",
+                "owner",
+                "result",
+                "error",
+                "usage",
+                "updated_at",
+            } or [(row["name"], row["pk"], row["notnull"]) for row in columns if row["pk"]] != [
+                ("id", 1, 1)
+            ]:
                 raise ValueError("AI_STORE_UNSAFE")
             unique_id = False
             for index in db.execute("PRAGMA index_list(operations)"):
                 if index["unique"] and not index["partial"]:
-                    fields = db.execute("SELECT * FROM pragma_index_xinfo(?) WHERE key=1", (index["name"],)).fetchall()
-                    unique_id |= [(row["name"], row["coll"]) for row in fields] == [("id", "BINARY")]
+                    fields = db.execute(
+                        "SELECT * FROM pragma_index_xinfo(?) WHERE key=1", (index["name"],)
+                    ).fetchall()
+                    unique_id |= [(row["name"], row["coll"]) for row in fields] == [
+                        ("id", "BINARY")
+                    ]
             if not unique_id:
                 raise ValueError("AI_STORE_UNSAFE")
             if writable:
                 db.execute("BEGIN IMMEDIATE")
                 db.rollback()
+
     @contextmanager
     def _connection(self, *, readonly=False):
         self._check_path()
-        db = sqlite3.connect(self.path.as_uri() + ("?mode=ro" if readonly else "?mode=rw"),
-                             uri=True, timeout=5)
+        db = sqlite3.connect(
+            self.path.as_uri() + ("?mode=ro" if readonly else "?mode=rw"), uri=True, timeout=5
+        )
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA synchronous=FULL")
@@ -117,23 +133,30 @@ class OperationStore:
             return None
         snapshot = json.loads(row["snapshot"])
         return {
-            "remoteOperationId": row["id"], "requestHash": row["request_hash"],
+            "remoteOperationId": row["id"],
+            "requestHash": row["request_hash"],
             "modelProfileVersion": snapshot["modelProfileVersion"],
             "pricingProfileVersion": snapshot["pricingProfileVersion"],
-            "sendNotAfter": snapshot["sendNotAfter"], "status": row["status"],
+            "sendNotAfter": snapshot["sendNotAfter"],
+            "status": row["status"],
             "result": json.loads(row["result"]) if row["result"] is not None else None,
             "error": row["error"],
             "usage": json.loads(row["usage"]) if row["usage"] is not None else None,
-            "sendClaimed": row["owner"] is not None, "updatedAt": row["updated_at"],
+            "sendClaimed": row["owner"] is not None,
+            "updatedAt": row["updated_at"],
         }
 
     def get(self, operation_id):
         with self._connection(readonly=True) as db:
-            return self._operation(db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone())
+            return self._operation(
+                db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
+            )
 
     def snapshot(self, operation_id):
         with self._connection(readonly=True) as db:
-            row = db.execute("SELECT snapshot FROM operations WHERE id=?", (operation_id,)).fetchone()
+            row = db.execute(
+                "SELECT snapshot FROM operations WHERE id=?", (operation_id,)
+            ).fetchone()
             return json.loads(row[0]) if row else None
 
     def accept(self, operation_id, validated_request):
@@ -141,12 +164,19 @@ class OperationStore:
         with self._write() as db:
             row = db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
             if row:
-                if row["request_hash"] != validated_request["requestHash"] or json.loads(row["snapshot"]) != validated_request:
+                if (
+                    row["request_hash"] != validated_request["requestHash"]
+                    or json.loads(row["snapshot"]) != validated_request
+                ):
                     raise ValueError("IDEMPOTENCY_KEY_REUSED")
                 return self._operation(row), False
-            db.execute("INSERT INTO operations(id,request_hash,snapshot,status,updated_at) VALUES(?,?,?,'accepted',?)",
-                       (operation_id, validated_request["requestHash"], snapshot, _now()))
-            return self._operation(db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()), True
+            db.execute(
+                "INSERT INTO operations(id,request_hash,snapshot,status,updated_at) VALUES(?,?,?,'accepted',?)",
+                (operation_id, validated_request["requestHash"], snapshot, _now()),
+            )
+            return self._operation(
+                db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()
+            ), True
 
     def claim(self, operation_id, check_policy):
         with self._write() as db:
@@ -158,31 +188,51 @@ class OperationStore:
             if failure is not None:
                 if failure not in {"VALIDATION_ERROR", "PROFILE_UNAVAILABLE", "PREVIEW_STALE"}:
                     raise ValueError("AI_INVALID_POLICY_RESULT")
-                db.execute("UPDATE operations SET status='failed_not_sent',error=?,updated_at=? WHERE id=? AND status='accepted'",
-                           (failure, _now(), operation_id))
+                db.execute(
+                    "UPDATE operations SET status='failed_not_sent',error=?,updated_at=? WHERE id=? AND status='accepted'",
+                    (failure, _now(), operation_id),
+                )
                 return None
             owner = str(uuid4())
-            db.execute("UPDATE operations SET status='sending',owner=?,updated_at=? WHERE id=? AND status='accepted'",
-                       (owner, _now(), operation_id))
+            db.execute(
+                "UPDATE operations SET status='sending',owner=?,updated_at=? WHERE id=? AND status='accepted'",
+                (owner, _now(), operation_id),
+            )
             return owner
 
     def reject(self, operation_id, failure):
         if failure not in {"VALIDATION_ERROR", "PROFILE_UNAVAILABLE", "PREVIEW_STALE"}:
             raise ValueError("AI_INVALID_POLICY_RESULT")
         with self._write() as db:
-            cursor = db.execute("""UPDATE operations SET status='failed_not_sent',error=?,updated_at=?
-                WHERE id=? AND status='accepted' AND owner IS NULL""", (failure, _now(), operation_id))
+            cursor = db.execute(
+                """UPDATE operations SET status='failed_not_sent',error=?,updated_at=?
+                WHERE id=? AND status='accepted' AND owner IS NULL""",
+                (failure, _now(), operation_id),
+            )
             return cursor.rowcount == 1
 
     def finish(self, operation_id, owner, status, *, result=None, usage=None):
         if status not in {"succeeded", "failed_sent", "unknown"}:
             raise ValueError("AI_INVALID_TERMINAL")
-        if (status == "succeeded") != (result is not None) or (status == "unknown" and usage is not None):
+        if (status == "succeeded") != (result is not None) or (
+            status == "unknown" and usage is not None
+        ):
             raise ValueError("AI_INVALID_TERMINAL")
-        error = {"succeeded": None, "failed_sent": "PROVIDER_FAILED", "unknown": "RESULT_UNKNOWN"}[status]
+        error = {"succeeded": None, "failed_sent": "PROVIDER_FAILED", "unknown": "RESULT_UNKNOWN"}[
+            status
+        ]
         with self._write() as db:
-            cursor = db.execute("""UPDATE operations SET status=?,result=?,error=?,usage=?,updated_at=?
+            cursor = db.execute(
+                """UPDATE operations SET status=?,result=?,error=?,usage=?,updated_at=?
                 WHERE id=? AND owner=? AND status IN ('sending','unknown')""",
-                (status, _encode(result) if result is not None else None, error,
-                 _encode(usage) if usage is not None else None, _now(), operation_id, owner))
+                (
+                    status,
+                    _encode(result) if result is not None else None,
+                    error,
+                    _encode(usage) if usage is not None else None,
+                    _now(),
+                    operation_id,
+                    owner,
+                ),
+            )
             return cursor.rowcount == 1

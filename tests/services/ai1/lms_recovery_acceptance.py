@@ -3,20 +3,30 @@
 Only this test's private SQLite bytes are restored, with both old processes
 stopped. The external isolation decision is explicit, never inferred from rows.
 """
+
 import copy
 from uuid import uuid4
 
 import pytest
 
 from deeptutor.services.ai1_contract import request_hash
-from tests.services.ai1.lms_acceptance import ID, NOW, PAYLOAD, calls, client, local, serve
+from tests.services.ai1.lms_acceptance import ID, NOW, PAYLOAD, calls, client, serve
+from tests.services.ai1.lms_acceptance import local as local
 
 
 def assert_isolated(root, store, saved, expected_calls):
     before = store.get(ID)
     with serve(root, mode="store-isolated") as (origin, _):
-        for method, operation_id in [("get", ID), ("put", ID), ("get", str(uuid4())), ("put", str(uuid4()))]:
-            assert client(origin, method, operation_id=operation_id) == {"error": "AI_STORE_ISOLATED", "status": 503}
+        for method, operation_id in [
+            ("get", ID),
+            ("put", ID),
+            ("get", str(uuid4())),
+            ("put", str(uuid4())),
+        ]:
+            assert client(origin, method, operation_id=operation_id) == {
+                "error": "AI_STORE_ISOLATED",
+                "status": 503,
+            }
         assert store.path.read_bytes() == saved
         assert store.get(ID) == before
         assert len(calls(root)) == expected_calls
@@ -90,7 +100,9 @@ def test_historical_success_query_after_quote_expiry_is_exact_and_never_sends(lo
 
 @pytest.mark.parametrize("mode", ["enabled", "query-only"])
 @pytest.mark.parametrize("continuity", [False, None], ids=["false", "missing"])
-def test_formal_start_without_external_continuity_cannot_open_ready_endpoint(local, mode, continuity):
+def test_formal_start_without_external_continuity_cannot_open_ready_endpoint(
+    local, mode, continuity
+):
     root, store = local
     with serve(root, fault="after-accept") as (origin, process):
         assert client(origin)["error"] == "AI_REMOTE_UNAVAILABLE"
