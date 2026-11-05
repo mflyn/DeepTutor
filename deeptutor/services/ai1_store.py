@@ -14,6 +14,8 @@ import sqlite3
 import stat
 from uuid import uuid4
 
+from deeptutor.services.ai1_contract import request_hash
+
 
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
@@ -132,7 +134,7 @@ class OperationStore:
         if row is None:
             return None
         snapshot = json.loads(row["snapshot"])
-        return {
+        operation = {
             "remoteOperationId": row["id"],
             "requestHash": row["request_hash"],
             "modelProfileVersion": snapshot["modelProfileVersion"],
@@ -145,6 +147,9 @@ class OperationStore:
             "sendClaimed": row["owner"] is not None,
             "updatedAt": row["updated_at"],
         }
+        if snapshot.get("schemaVersion") == "ai3-provider-operation-v1":
+            operation["providerProfile"] = snapshot["providerProfile"]
+        return operation
 
     def get(self, operation_id):
         with self._connection(readonly=True) as db:
@@ -184,7 +189,20 @@ class OperationStore:
             if row is None or row["status"] != "accepted":
                 return None
             # The clock/profile check is inside the write lock, not before waiting for it.
-            failure = check_policy(json.loads(row["snapshot"]))
+            snapshot = json.loads(row["snapshot"])
+            failure = None
+            if snapshot.get("schemaVersion") == "ai3-provider-operation-v1":
+                # Bind the AI3 claim to the entire immutable profile-bearing request.
+                try:
+                    if (
+                        row["request_hash"] != snapshot["requestHash"]
+                        or request_hash(snapshot) != row["request_hash"]
+                    ):
+                        failure = "VALIDATION_ERROR"
+                except (ValueError, KeyError):
+                    failure = "VALIDATION_ERROR"
+            if failure is None:
+                failure = check_policy(snapshot)
             if failure is not None:
                 if failure not in {"VALIDATION_ERROR", "PROFILE_UNAVAILABLE", "PREVIEW_STALE"}:
                     raise ValueError("AI_INVALID_POLICY_RESULT")

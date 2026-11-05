@@ -179,6 +179,10 @@ class BackgroundLeaderSupervisor:
             lost_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await lost_task
+            # Child cleanup must not swallow cancellation of this leader task.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise asyncio.CancelledError
 
     async def _drain_background_commands(self) -> None:
         if self.control_callback is None:

@@ -18,7 +18,7 @@ def _error(code, status):
     )
 
 
-def create_operation_app(*, service, token):
+def create_operation_app(*, service, token, dispatch_replays=True):
     if not isinstance(token, str) or not re.fullmatch(r"[\x21-\x7e]{32,256}", token):
         raise ContractError("AI_PROFILE_UNAVAILABLE", 503)
     secret = token.encode("ascii")
@@ -74,7 +74,7 @@ def create_operation_app(*, service, token):
                     raise ContractError("AI_INPUT_TOO_LARGE", 413)
                 chunks.extend(part)
             operation, created = service.receive(operation_id, bytes(chunks))
-            if operation["status"] == "accepted":
+            if operation["status"] == "accepted" and (created or dispatch_replays):
                 await service.dispatch(operation_id)
                 operation = service.get(operation_id)
             return JSONResponse(
