@@ -134,3 +134,95 @@ async def test_slow_service_start_keeps_leader_lease_alive() -> None:
 
     release_start.set()
     await supervisor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_target", ["lost", "operation"])
+async def test_close_preserves_parent_cancellation_during_child_cleanup(
+    cleanup_target: str,
+) -> None:
+    coordinator = MemoryCoordinator()
+    cleanup_entered = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    recovery_started = asyncio.Event()
+    release_recovery = asyncio.Event()
+    callbacks: list[str] = []
+
+    class CleanupBarrier(asyncio.Event):
+        async def wait(self) -> bool:
+            try:
+                return await super().wait()
+            finally:
+                cleanup_entered.set()
+                await release_cleanup.wait()
+
+    async def start() -> None:
+        callbacks.append("start")
+
+    async def stop() -> None:
+        callbacks.append("stop")
+
+    async def recover() -> None:
+        recovery_started.set()
+        try:
+            await release_recovery.wait()
+        finally:
+            cleanup_entered.set()
+            await release_cleanup.wait()
+
+    supervisor = BackgroundLeaderSupervisor(
+        coordinator,
+        "cleanup-race",
+        start_callbacks=[start],
+        stop_callbacks=[stop],
+        recovery_callback=recover if cleanup_target == "operation" else None,
+    )
+    if cleanup_target == "lost":
+        supervisor._leadership_lost = CleanupBarrier()
+    close_task = None
+    heartbeat = None
+    await supervisor.start()
+    leader = supervisor._task
+    try:
+        if cleanup_target == "operation":
+            await asyncio.wait_for(recovery_started.wait(), timeout=1)
+            supervisor._leadership_lost.set()
+        await asyncio.wait_for(cleanup_entered.wait(), timeout=1)
+        heartbeat = supervisor._heartbeat_task
+        assert leader is not None and not leader.done()
+        assert heartbeat is not None and not heartbeat.done()
+        assert callbacks == ["start"]
+        assert await coordinator.leader_id() == "cleanup-race"
+
+        close_task = asyncio.create_task(supervisor.close())
+        # Observation must not inject a second cancellation that rescues a hung close.
+        done, _ = await asyncio.wait({close_task}, timeout=1)
+        assert close_task in done, "close swallowed parent cancellation during child cleanup"
+        await close_task
+        assert leader.cancelled()
+        assert heartbeat.done()
+        assert callbacks == ["start", "stop"]
+        assert supervisor._task is None
+        assert supervisor._heartbeat_task is None
+        assert not supervisor._services_running
+        assert supervisor._started_service_count == 0
+        assert supervisor.lease is None
+        assert await coordinator.leader_id() is None
+    finally:
+        # Only after the observation/assertions: release and reap tasks on the red path.
+        release_cleanup.set()
+        release_recovery.set()
+        if leader is not None and not leader.done():
+            leader.cancel()
+        if close_task is None:
+            close_task = asyncio.create_task(supervisor.close())
+        tasks = {task for task in (leader, close_task) if task is not None}
+        _, pending = await asyncio.wait(tasks, timeout=1)
+        for task in pending:
+            task.cancel()
+        if pending:
+            _, pending = await asyncio.wait(pending, timeout=1)
+        assert not pending, "test cleanup left leader tasks running"
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await supervisor.close()
+        await coordinator.close()

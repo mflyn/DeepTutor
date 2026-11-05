@@ -18,6 +18,9 @@ from deeptutor.services.ai1_contract import (
 
 
 class OperationService:
+    _schema_version = "ai1-provider-operation-v1"
+    _parse_request = staticmethod(parse_request)
+
     def __init__(self, *, store, provider, profile, mode="off", continuous=False, clock=None):
         if (
             mode not in {"off", "enabled", "query-only", "store-isolated"}
@@ -44,6 +47,10 @@ class OperationService:
         ):
             raise ContractError()
 
+    def _check_namespace(self, snapshot):
+        if snapshot is not None and snapshot.get("schemaVersion") != self._schema_version:
+            raise ValueError("IDEMPOTENCY_KEY_REUSED")
+
     def _prepare(self, snapshot):
         failure = check_policy(snapshot, self._profile, self._clock())
         if failure:
@@ -59,7 +66,7 @@ class OperationService:
     def receive(self, operation_id, raw):
         self._admit(write=True)
         self._id(operation_id)
-        snapshot = parse_request(raw)
+        snapshot = self._parse_request(raw)
         existing = self.store.get(operation_id)
         if existing is not None:
             # Historical terminal replay is independent of today's price validity.
@@ -85,15 +92,19 @@ class OperationService:
         operation = self.store.get(operation_id)
         if operation is None:
             raise ContractError("RESOURCE_NOT_FOUND", 404)
+        self._check_namespace(self.store.snapshot(operation_id))
         return operation
 
     async def dispatch(self, operation_id):
         self._admit(write=True)
         self._id(operation_id)
+        self._check_namespace(self.store.snapshot(operation_id))
         prepared = None
 
         def policy(snapshot):
             nonlocal prepared
+            # A namespace mismatch must not mutate or claim another profile's row.
+            self._check_namespace(snapshot)
             try:
                 prepared = self._prepare(snapshot)
             except ContractError as error:

@@ -97,7 +97,7 @@ def _nonfinite(_):
     raise ContractError()
 
 
-def parse_request(raw):
+def _parse_request(raw, *, schema_version, request_keys):
     if not isinstance(raw, bytes):
         raise ContractError()
     if len(raw) > 32768:
@@ -108,7 +108,7 @@ def parse_request(raw):
         )
     except (UnicodeError, ValueError, RecursionError):
         raise ContractError() from None
-    if not exact(body, REQUEST_KEYS) or body["schemaVersion"] != "ai1-provider-operation-v1":
+    if not exact(body, request_keys) or body["schemaVersion"] != schema_version:
         raise ContractError()
     if not all(text(body[k], 256) for k in ("modelProfileVersion", "pricingProfileVersion")):
         raise ContractError()
@@ -151,6 +151,12 @@ def parse_request(raw):
     if request_hash(body) != body["requestHash"]:
         raise ContractError()
     return body
+
+
+def parse_request(raw):
+    return _parse_request(
+        raw, schema_version="ai1-provider-operation-v1", request_keys=REQUEST_KEYS
+    )
 
 
 def check_policy(body, profile, now_ms):
