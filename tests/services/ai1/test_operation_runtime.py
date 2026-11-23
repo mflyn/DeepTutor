@@ -272,7 +272,7 @@ else:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def formal_probe(tmp_path, config_path, source):
+def formal_probe(tmp_path, config_path, source, *, ai3_config_path=None):
     home = tmp_path / "formal-home"
     home.mkdir(exist_ok=True)
     modules = home / "data" / "system"
@@ -298,6 +298,8 @@ def formal_probe(tmp_path, config_path, source):
     }
     if config_path is not None:
         env["DEEPTUTOR_AI1_CONFIG_FILE"] = str(config_path)
+    if ai3_config_path is not None:
+        env["DEEPTUTOR_AI3_CONFIG_FILE"] = str(ai3_config_path)
     # No credentials/settings inherit from the developer's process or real home.
     result = subprocess.run(
         [

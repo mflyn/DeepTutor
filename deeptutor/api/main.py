@@ -364,11 +364,15 @@ async def lifespan(app: FastAPI):
     app.state.ready = False
     try:
         app.state.ai1_runtime.start()
+        app.state.ai3_runtime.start()
         async with _application_lifespan(app):
             yield
     finally:
         app.state.ready = False
-        app.state.ai1_runtime.stop()
+        try:
+            app.state.ai3_runtime.stop()
+        finally:
+            app.state.ai1_runtime.stop()
 
 
 from deeptutor.services.workspace.activity import WorkspaceActivityMiddleware
@@ -385,7 +389,10 @@ app = FastAPI(
 )
 
 from deeptutor.services.ai1_runtime import mount_operation_runtime
+from deeptutor.services.ai3_runtime import mount_operation_runtime as mount_ai3_runtime
 
+# The narrower AI3 namespace must precede the AI1 catch-all mount.
+mount_ai3_runtime(app)
 mount_operation_runtime(app)
 
 from deeptutor.core.errors import AccessError
