@@ -1,8 +1,8 @@
 """AI3 uses the AI1 journal/claim machinery with no default real Provider.
 
-Only explicit in-process Provider injection is supported for local synthetic
-qualification. No settings, credentials, SDK fallback or AI1 counter is loaded.
-A separately qualified AI3 production configuration is not implemented here.
+Formal lifecycle assembly lives in ai3_runtime. This service itself loads no
+settings, credentials, SDK fallback or counter. Real counter qualification is
+still a separate enabling prerequisite; synthetic injection does not prove it.
 """
 
 import rfc8785

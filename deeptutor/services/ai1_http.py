@@ -74,7 +74,9 @@ def create_operation_app(*, service, token, dispatch_replays=True):
                     raise ContractError("AI_INPUT_TOO_LARGE", 413)
                 chunks.extend(part)
             operation, created = service.receive(operation_id, bytes(chunks))
-            if operation["status"] == "accepted" and (created or dispatch_replays):
+            if operation["status"] == "accepted" and (
+                created or (dispatch_replays and operation.get("feeMode") != "estimate_only")
+            ):
                 await service.dispatch(operation_id)
                 operation = service.get(operation_id)
             return JSONResponse(

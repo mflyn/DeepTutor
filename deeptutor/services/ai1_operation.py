@@ -9,9 +9,12 @@ import copy
 import re
 import time
 
+import rfc8785
+
 from deeptutor.services.ai1_contract import (
     ContractError,
     check_policy,
+    is_trial,
     parse_request,
     validate_result,
 )
@@ -48,10 +51,14 @@ class OperationService:
             raise ContractError()
 
     def _check_namespace(self, snapshot):
-        if snapshot is not None and snapshot.get("schemaVersion") != self._schema_version:
+        if snapshot is not None and snapshot.get("schemaVersion") not in {
+            self._schema_version,
+            self._schema_version.replace("-v1", "-v2"),
+        }:
             raise ValueError("IDEMPOTENCY_KEY_REUSED")
 
     def _prepare(self, snapshot):
+        self._parse_request(rfc8785.dumps(snapshot))
         failure = check_policy(snapshot, self._profile, self._clock())
         if failure:
             raise ContractError(failure, 503)
@@ -125,7 +132,7 @@ class OperationService:
             return
         try:
             value, usage = await self.provider.send(prepared)
-            result, usage = validate_result(value, usage)
+            result, usage = validate_result(value, usage, trial=is_trial(snapshot))
         except asyncio.CancelledError:
             try:
                 self.store.finish(operation_id, owner, "unknown")

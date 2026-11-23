@@ -31,6 +31,18 @@ PROFILE_KEYS = {
     "inputPriceMicrosPerMillion",
     "outputPriceMicrosPerMillion",
 }
+TRIAL_KEYS = {
+    "feeMode",
+    "estimateMethodVersion",
+    "referenceInputTokens",
+    "referenceOutputTokens",
+    "estimatedReservationMicros",
+    "feeNoticeVersion",
+}
+
+
+def is_trial(body):
+    return body.get("schemaVersion") in {"ai1-provider-operation-v2", "ai3-provider-operation-v2"}
 
 
 class ContractError(ValueError):
@@ -108,7 +120,13 @@ def _parse_request(raw, *, schema_version, request_keys):
         )
     except (UnicodeError, ValueError, RecursionError):
         raise ContractError() from None
-    if not exact(body, request_keys) or body["schemaVersion"] != schema_version:
+    trial = type(body) is dict and body.get("schemaVersion") == schema_version.replace("-v1", "-v2")
+    expected_keys = (
+        (request_keys - {"reservedCeilingMicros"}) | TRIAL_KEYS if trial else request_keys
+    )
+    if not exact(body, expected_keys) or body["schemaVersion"] != (
+        schema_version.replace("-v1", "-v2") if trial else schema_version
+    ):
         raise ContractError()
     if not all(text(body[k], 256) for k in ("modelProfileVersion", "pricingProfileVersion")):
         raise ContractError()
@@ -116,7 +134,17 @@ def _parse_request(raw, *, schema_version, request_keys):
         r"[0-9a-f]{64}", body["requestHash"]
     ):
         raise ContractError()
-    if not integer(body["reservedCeilingMicros"]):
+    if not integer(body["estimatedReservationMicros" if trial else "reservedCeilingMicros"]):
+        raise ContractError()
+    if trial and (
+        body["feeMode"] != "estimate_only"
+        or body["estimateMethodVersion"] != "reference-8192-4096-v1"
+        or body["feeNoticeVersion"] != "estimate-not-cap-v1"
+        or type(body["referenceInputTokens"]) is not int
+        or body["referenceInputTokens"] != 8192
+        or type(body["referenceOutputTokens"]) is not int
+        or body["referenceOutputTokens"] != 4096
+    ):
         raise ContractError()
     iso_ms(body["sendNotAfter"])
     messages = body["messages"]
@@ -131,7 +159,15 @@ def _parse_request(raw, *, schema_version, request_keys):
             raise ContractError()
     options = body["requestOptions"]
     if not exact(
-        options, {"model", "maxInputTokens", "maxOutputTokens", "thinking", "tools", "attemptLimit"}
+        options,
+        {
+            "model",
+            "maxRequestBytes" if trial else "maxInputTokens",
+            "maxOutputTokens",
+            "thinking",
+            "tools",
+            "attemptLimit",
+        },
     ):
         raise ContractError()
     if (
@@ -141,7 +177,7 @@ def _parse_request(raw, *, schema_version, request_keys):
         or any(
             type(options[key]) is not int or options[key] != value
             for key, value in (
-                ("maxInputTokens", 8192),
+                ("maxRequestBytes", 32768) if trial else ("maxInputTokens", 8192),
                 ("maxOutputTokens", 4096),
                 ("attemptLimit", 1),
             )
@@ -161,7 +197,19 @@ def parse_request(raw):
 
 def check_policy(body, profile, now_ms):
     """Return a safe not-sent failure code; caller samples time at each boundary."""
-    if not exact(profile, PROFILE_KEYS) or not integer(now_ms):
+    trial = is_trial(body)
+    keys = (
+        PROFILE_KEYS | {"feeMode", "sourceReference", "estimateAcknowledged"}
+        if trial
+        else PROFILE_KEYS
+    )
+    if not exact(profile, keys) or not integer(now_ms):
+        return "PROFILE_UNAVAILABLE"
+    if trial and (
+        profile["feeMode"] != "estimate_only"
+        or profile["estimateAcknowledged"] is not True
+        or not text(profile["sourceReference"], 2000)
+    ):
         return "PROFILE_UNAVAILABLE"
     if not all(
         text(profile[k], 256) for k in ("model", "modelProfileVersion", "pricingProfileVersion")
@@ -195,7 +243,10 @@ def check_policy(body, profile, now_ms):
     ceiling = (8192 * profile["inputPriceMicrosPerMillion"] + 999999) // 1000000 + (
         4096 * profile["outputPriceMicrosPerMillion"] + 999999
     ) // 1000000
-    if ceiling > MAX_SAFE_INTEGER or body["reservedCeilingMicros"] != ceiling:
+    if (
+        ceiling > MAX_SAFE_INTEGER
+        or body["estimatedReservationMicros" if trial else "reservedCeilingMicros"] != ceiling
+    ):
         return "PROFILE_UNAVAILABLE"
     if (
         now_ms >= deadline
@@ -205,7 +256,7 @@ def check_policy(body, profile, now_ms):
     return None
 
 
-def validate_result(value, usage):
+def validate_result(value, usage, *, trial=False):
     if not isinstance(value, str):
         raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)
     value = value.replace("\r\n", "\n")
@@ -213,7 +264,7 @@ def validate_result(value, usage):
         raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)
     if usage is not None and (
         not exact(usage, {"inputTokens", "outputTokens"})
-        or not integer(usage["inputTokens"], 8192)
+        or not integer(usage["inputTokens"], MAX_SAFE_INTEGER if trial else 8192)
         or not integer(usage["outputTokens"], 4096)
     ):
         raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)

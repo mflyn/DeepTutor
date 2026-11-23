@@ -1,7 +1,9 @@
 """Single-shot SDK path for AI-1, separate from chat retries and key rotation.
 
-No counter is supplied by default: a model-profile-qualified bound on the whole
-wire body is an enabling prerequisite. Synthetic counters prove plumbing only.
+No counter is supplied by default: strict v1 requires a model-qualified bound.
+Explicit v2 trial profiles acknowledge estimated fees, not a hard cost cap, and
+enforce the complete wire byte limit without claiming input-token qualification.
+Synthetic counters prove strict-path plumbing only.
 This module never reads runtime settings, credentials or environment at import.
 """
 
@@ -17,9 +19,11 @@ import httpx
 import rfc8785
 
 from deeptutor.services.ai1_contract import (
+    MAX_SAFE_INTEGER,
     ContractError,
     check_policy,
     integer,
+    is_trial,
     parse_request,
     validate_result,
 )
@@ -126,6 +130,8 @@ class _SingleRequestTransport(httpx.AsyncBaseTransport):
 
 
 class RestrictedCompletionProvider:
+    _parse_request = staticmethod(parse_request)
+
     def __init__(self, *, profile, key_loader, counter=None, clock=None, transport_factory=None):
         self._profile = copy.deepcopy(profile)
         self._key_loader = key_loader
@@ -141,9 +147,10 @@ class RestrictedCompletionProvider:
             raise ContractError(failure, 503)
 
     def prepare(self, snapshot):
-        snapshot = parse_request(rfc8785.dumps(snapshot))
+        snapshot = self._parse_request(rfc8785.dumps(snapshot))
         self._policy(snapshot)
-        if (
+        trial = is_trial(snapshot)
+        if not trial and (
             self._counter is None
             or getattr(self._counter, "model_profile_version", None)
             != self._profile["modelProfileVersion"]
@@ -158,24 +165,28 @@ class RestrictedCompletionProvider:
                 "thinking": {"type": "disabled"},
             }
         )
-        try:
-            bound = self._counter.upper_bound(wire)
-        except Exception:
-            raise ContractError("PROFILE_UNAVAILABLE", 503) from None
-        if not integer(bound, 8192):
-            raise ContractError("VALIDATION_ERROR")
+        if trial:
+            if len(wire) > 32768:
+                raise ContractError("AI_INPUT_TOO_LARGE", 413)
+        else:
+            try:
+                bound = self._counter.upper_bound(wire)
+            except Exception:
+                raise ContractError("PROFILE_UNAVAILABLE", 503) from None
+            if not integer(bound, 8192):
+                raise ContractError("VALIDATION_ERROR")
         self._policy(snapshot)
         return PreparedCompletion(rfc8785.dumps(snapshot), wire)
 
     def _validate(self, prepared):
         if (
             type(prepared) is not PreparedCompletion
-            or self.prepare(parse_request(prepared.snapshot)) != prepared
+            or self.prepare(self._parse_request(prepared.snapshot)) != prepared
         ):
             raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)
 
     @staticmethod
-    def _result(raw, model):
+    def _result(raw, model, *, trial=False):
         value = _json(raw)
         if not isinstance(value, dict) or value.get("model") != model:
             raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)
@@ -199,7 +210,7 @@ class RestrictedCompletionProvider:
         if usage is not None:
             if (
                 type(usage) is not dict
-                or not integer(usage.get("prompt_tokens"), 8192)
+                or not integer(usage.get("prompt_tokens"), MAX_SAFE_INTEGER if trial else 8192)
                 or not integer(usage.get("completion_tokens"), 4096)
             ):
                 raise ContractError("AI_REMOTE_CONTRACT_INVALID", 503)
@@ -212,7 +223,7 @@ class RestrictedCompletionProvider:
                 "inputTokens": usage["prompt_tokens"],
                 "outputTokens": usage["completion_tokens"],
             }
-        result, usage = validate_result(message.get("content"), usage)
+        result, usage = validate_result(message.get("content"), usage, trial=trial)
         return result["text"], usage
 
     async def send(self, prepared):
@@ -251,7 +262,11 @@ class RestrictedCompletionProvider:
                             extra_body={"thinking": {"type": "disabled"}},
                             extra_headers={"Accept-Encoding": "identity"},
                         )
-                    return self._result(response.http_response.content, wire["model"])
+                    return self._result(
+                        response.http_response.content,
+                        wire["model"],
+                        trial=is_trial(self._parse_request(prepared.snapshot)),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -1,4 +1,4 @@
-"""Explicit local AI3 assembly, never mounted in the public application."""
+"""Standalone AI3 test assembly; formal application uses ai3_runtime instead."""
 
 from fastapi import FastAPI
 

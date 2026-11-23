@@ -147,8 +147,16 @@ class OperationStore:
             "sendClaimed": row["owner"] is not None,
             "updatedAt": row["updated_at"],
         }
-        if snapshot.get("schemaVersion") == "ai3-provider-operation-v1":
+        if snapshot.get("schemaVersion") in {
+            "ai3-provider-operation-v1",
+            "ai3-provider-operation-v2",
+        }:
             operation["providerProfile"] = snapshot["providerProfile"]
+        if snapshot.get("schemaVersion") in {
+            "ai1-provider-operation-v2",
+            "ai3-provider-operation-v2",
+        }:
+            operation.update(schemaVersion=snapshot["schemaVersion"], feeMode=snapshot["feeMode"])
         return operation
 
     def get(self, operation_id):
@@ -191,7 +199,11 @@ class OperationStore:
             # The clock/profile check is inside the write lock, not before waiting for it.
             snapshot = json.loads(row["snapshot"])
             failure = None
-            if snapshot.get("schemaVersion") == "ai3-provider-operation-v1":
+            if snapshot.get("schemaVersion") in {
+                "ai3-provider-operation-v1",
+                "ai3-provider-operation-v2",
+                "ai1-provider-operation-v2",
+            }:
                 # Bind the AI3 claim to the entire immutable profile-bearing request.
                 try:
                     if (

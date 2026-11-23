@@ -94,6 +94,19 @@ def _profile_probe(profile, now):
         "sendNotAfter": stamp.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
     }
     body["requestHash"] = request_hash(body)
+    if profile.get("feeMode") == "estimate_only":
+        body["schemaVersion"] = "ai1-provider-operation-v2"
+        body["estimatedReservationMicros"] = body.pop("reservedCeilingMicros")
+        body.update(
+            feeMode="estimate_only",
+            estimateMethodVersion="reference-8192-4096-v1",
+            referenceInputTokens=8192,
+            referenceOutputTokens=4096,
+            feeNoticeVersion="estimate-not-cap-v1",
+        )
+        body["requestOptions"].pop("maxInputTokens")
+        body["requestOptions"]["maxRequestBytes"] = 32768
+        body["requestHash"] = request_hash(body)
     if check_policy(body, profile, now):
         raise ValueError()
     return body
@@ -107,6 +120,17 @@ class _IsolatedService:
 
 
 class OperationRuntime:
+    _service_type = OperationService
+    _probe = staticmethod(_profile_probe)
+    _dispatch_replays = False
+
+    def _default_provider(self, profile, key):
+        from deeptutor.services.ai1_provider import RestrictedCompletionProvider
+
+        return RestrictedCompletionProvider(
+            profile=profile, key_loader=lambda: key, clock=self._clock
+        )
+
     def __init__(self, *, config_path=None, provider=None, clock=None):
         self._config_path = config_path
         self._provider = provider
@@ -149,21 +173,17 @@ class OperationRuntime:
                 profile, provider = None, None
                 if mode == "enabled":
                     profile = config["profile"]
-                    probe = _profile_probe(profile, self._clock())
+                    probe = self._probe(profile, self._clock())
                     key = _secret(config["providerKeyFile"], minimum=1, maximum=512)
                     if token == key:
                         raise ValueError()
                     provider = self._provider
                     if provider is None:
-                        from deeptutor.services.ai1_provider import RestrictedCompletionProvider
-
-                        provider = RestrictedCompletionProvider(
-                            profile=profile, key_loader=lambda: key, clock=self._clock
-                        )
+                        provider = self._default_provider(profile, key)
                     provider.prepare(probe)
                     if check_policy(probe, profile, self._clock()):
                         raise ValueError()
-                service = OperationService(
+                service = self._service_type(
                     store=store,
                     provider=provider,
                     profile=profile,
@@ -171,7 +191,9 @@ class OperationRuntime:
                     continuous=True,
                     clock=self._clock,
                 )
-            application = create_operation_app(service=service, token=token)
+            application = create_operation_app(
+                service=service, token=token, dispatch_replays=self._dispatch_replays
+            )
             self.service, self._app, self._started = service, application, True
         except Exception:
             self.stop()
